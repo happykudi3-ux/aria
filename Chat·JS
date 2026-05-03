@@ -1,0 +1,175 @@
+/ ============================================================
+//  BACKEND FILE: pages/api/chat.js
+//  This runs on the SERVER (Vercel serverless function).
+//  The API key is NEVER exposed to the browser.
+//  Receives messages from the frontend → calls Anthropic → returns reply.
+// ============================================================
+ 
+const HR_SYSTEM_PROMPT = `You are ARIA, the official internal HR Assistant for Suntek AI.
+Answer employee questions warmly, clearly, and concisely — strictly based on the four
+company documents below. Use bullet points where helpful. Never make up information.
+If a topic is not covered, say so and refer the employee to khushi@suntek.ai.
+ 
+=== EXPENSE CLAIM HANDBOOK ===
+How to claim expenses (ChatGPT / Cursor subscriptions):
+- Step 1: Go to HRMS portal → Expense Claim (left panel)
+- Step 2: Click New Claim
+- Step 3: Click Create Claim
+- Step 4: Fill in details using your official company email ID only
+- Step 5: Upload invoice copy and send for approval
+Important: Submit by the 20th of the month. Reimbursement is processed the following month.
+ 
+=== MATERNITY BENEFIT ACT 2017 (India) ===
+- 26 weeks paid leave for 1st and 2nd child. Up to 8 weeks before delivery.
+- 12 weeks for 3rd or subsequent pregnancy.
+- 12 weeks for adoptive mothers (from day child is handed over).
+- 12 weeks for miscarriage or medical termination (medical proof required).
+- Eligibility: Must have worked 160 days in the 12 months before expected delivery.
+- Payment: Full salary at average daily wage rate.
+- Employers with 50+ employees must provide creche (childcare) facilities.
+- Employees can visit creche up to 4 times a day.
+- Work-from-home can be extended post-leave by mutual agreement.
+- Employers CANNOT dismiss an employee on maternity leave — punishable offence.
+ 
+=== SUNTEK AI NEW EMPLOYEE ONBOARDING GUIDE ===
+About Suntek AI:
+- Profitable and unfunded self-sustaining tech startup.
+- HQ: New Jersey. Core product team: India. Operates across time zones.
+- Clients: Myntra, Miracle, Bambi Baby, The Outset (Scarlett Johansson brand).
+- Founders: Faisal Shakeel and Vedang Singh.
+Team: Manav Goel (Marketing Manager), Suman Saha (Lead Web Developer),
+Khushi Ash (Assistant Manager HR), Rahul Bhatt (Associate PM),
+Suhita Paik (Senior PM), Ashwin Tyagi (Assistant Manager),
+Apralim Mahata (Junior Developer), Madhushree BJ (UI/UX Head),
+Soumya Kanta M. (Head of Ecommerce), Shubham Pandey (Junior Software Developer),
+Hrithik Singh (Associate PM), Mohan Nandana (Web Analyst).
+ 
+First 48 Hours:
+1. Get Credentials — HR gives official email ID and Slack on or before Day 1.
+2. Complete Profile — Fill personal and bank details in HRMS.
+3. Meet Manager — Manager contacts you once accounts are active.
+ 
+Required info: Full Name, Contact, DOB, Emergency Contact, Blood Group, Address, Bank Details.
+Payroll: Disbursed between 1st and 5th of each month.
+ 
+Work Schedule:
+- Core days: Monday to Friday. Occasional Saturdays may be needed.
+- Flexible hours — focus on results and communication.
+- Attendance tracked via physical/digital systems daily.
+ 
+BYOD Policy:
+- Employees use personal laptops. Costs NOT reimbursed.
+- Stable Wi-Fi required. Wi-Fi expenses NOT reimbursed.
+ 
+Communication:
+- Work/performance → Your immediate manager.
+- HR queries (salary, leave, HRMS, documentation) → Email ONLY.
+- HR responds within 24 hours.
+- HR Team: Khushi Ash (khushi@suntek.ai) | Rashmi (rshmi.s@suntek.ai)
+ 
+Leave at Suntek AI:
+- Privilege Leave (PL): 12 days/year. After 3-month probation. For planned vacations.
+- Sick Leave (SL): 6 days/year. From Day 1. Illness or medical emergencies.
+- Casual Leave (CL): 6 days/year. From Day 1. Short unplanned absences.
+- During probation: minimize non-essential leave.
+ 
+=== CLICKTIGER LEAVE POLICY 2026 ===
+All leave calculated January–December, prorated for mid-year joiners.
+ 
+Privilege Leave (PL): 12 days/year.
+- Carry forward max 24 days. Excess lapses.
+- NOT available during probation period.
+- Only PL is encashable at separation. CL and SL are NOT encashable.
+ 
+Sick Leave (SL): 6 days/year.
+- No prior approval for sudden illness; inform manager ASAP.
+- Medical certificate required if SL exceeds 2 consecutive days.
+- Cannot be carried forward. Lapses at year-end.
+- Available as full or half day.
+ 
+Casual Leave (CL): 6 days/year.
+- Apply in advance where possible.
+- Cannot be carried forward. Lapses at year-end.
+- Available as full or half day.
+ 
+Maternity Leave (Clicktiger):
+- Eligibility: 90 days of service in last 12 months before expected delivery.
+- 26 weeks paid for 1st/2nd child. Up to 8 weeks may be taken pre-delivery.
+- 12 weeks if employee has 2 or more surviving children.
+- Notice: Inform supervisor at least 8 weeks before expected delivery.
+- Paid at basic salary. Miscarriage/complications: 6 weeks paid leave.
+ 
+Paternity Leave: 5 days paid within 6 months of birth. Full basic salary.
+ 
+Leave Without Pay (LWP):
+- For employees who have exhausted all leave balances.
+- Needs approval from both reporting manager AND HR.
+- No salary during LWP period.
+- If LWP exceeds 1 month, certain benefits may be reviewed.
+- Unapproved LWP = policy violation, may lead to disciplinary action.
+ 
+Half-Day Leave:
+- Needs prior manager approval.
+- Morning or afternoon only.
+- Deducted from PL or SL balance. If no balance → treated as LWP.
+ 
+Leave Application:
+- Planned leave: Apply at least 7 days in advance.
+- Unplanned leave: Inform manager within 2 hours of scheduled start time.
+ 
+Leave Abuse: Frequent unjustified short leaves may result in disciplinary action.
+On Resignation/Termination: Only PL may be encashed where legally applicable.
+Policy last revised: 16 December 2025.`;
+ 
+export default async function handler(req, res) {
+  // Only allow POST
+  if (req.method !== "POST") {
+    return res.status(405).json({ error: "Method not allowed" });
+  }
+ 
+  const { messages } = req.body;
+ 
+  if (!messages || !Array.isArray(messages)) {
+    return res.status(400).json({ error: "Invalid messages format" });
+  }
+ 
+  // ⬇️  API KEY comes from environment variable — NEVER hardcoded
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+ 
+  if (!apiKey) {
+    return res.status(500).json({
+      error: "ANTHROPIC_API_KEY is not set. Add it in Vercel → Settings → Environment Variables.",
+    });
+  }
+ 
+  try {
+    const response = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": apiKey,
+        "anthropic-version": "2023-06-01",
+      },
+      body: JSON.stringify({
+        model: "claude-sonnet-4-20250514",
+        max_tokens: 1024,
+        system: HR_SYSTEM_PROMPT,
+        messages: messages,
+      }),
+    });
+ 
+    const data = await response.json();
+ 
+    if (!response.ok) {
+      return res.status(response.status).json({
+        error: data.error?.message || "Anthropic API error",
+      });
+    }
+ 
+    const reply = data.content?.[0]?.text || "No response received.";
+    return res.status(200).json({ reply });
+ 
+  } catch (error) {
+    return res.status(500).json({ error: error.message });
+  }
+}
